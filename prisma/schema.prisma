@@ -1,0 +1,574 @@
+// YellaCar — Phase 1 (MVP) : auth/rôles, flotte, clients, tarifs, réservations, contrats
+// Multi-tenant : chaque table métier porte companyId.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────── Société, agences, utilisateurs ─────────────
+
+model Company {
+  id            String   @id @default(cuid())
+  name          String
+  legalName     String?
+  email         String?
+  phone         String?
+  whatsapp      String?
+  city          String?
+  country       String   @default("MA")
+  currency      String   @default("MAD")
+  locale        String   @default("fr")
+  taxRate       Decimal  @default(20) @db.Decimal(5, 2)
+  pricesIncludeTax Boolean @default(true)
+  ice           String?
+  taxId         String?
+  tradeRegister String?
+  primaryColor  String   @default("#F5B700")
+  logoUrl       String?
+  createdAt     DateTime @default(now())
+
+  branches   Branch[]
+  users      User[]
+  roles      Role[]
+  customers  Customer[]
+  categories VehicleCategory[]
+  vehicles   Vehicle[]
+  seasons    Season[]
+  options    RentalOption[]
+  protections Protection[]
+  reservations Reservation[]
+  contracts  Contract[]
+  sequences  DocumentSequence[]
+  payments   Payment[]
+  cashSessions CashSession[]
+  deposits   Deposit[]
+  invoices   Invoice[]
+  suppliers  Supplier[]
+  expenses   Expense[]
+  auditLogs  AuditLog[]
+}
+
+model Branch {
+  id        String  @id @default(cuid())
+  companyId String
+  name      String
+  city      String?
+  phone     String?
+  isDefault Boolean @default(false)
+  isActive  Boolean @default(true)
+
+  company  Company   @relation(fields: [companyId], references: [id])
+  users    User[]
+  vehicles Vehicle[]
+
+  @@index([companyId])
+}
+
+model Role {
+  id          String   @id @default(cuid())
+  companyId   String
+  key         String   // company_admin, accountant, driver, fleet_agent...
+  name        String
+  description String?
+  isSystem    Boolean  @default(false)
+  permissions String[] // ex: ["vehicles.read","reservations.write"]
+
+  company Company @relation(fields: [companyId], references: [id])
+  users   UserRole[]
+
+  @@unique([companyId, key])
+}
+
+model User {
+  id           String    @id @default(cuid())
+  companyId    String
+  branchId     String?
+  name         String
+  email        String
+  phone        String?
+  passwordHash String
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+
+  company      Company   @relation(fields: [companyId], references: [id])
+  branch       Branch?   @relation(fields: [branchId], references: [id])
+  roles        UserRole[]
+  reservations Reservation[] @relation("ReservationCreator")
+  payments     Payment[]
+  cashSessions CashSession[] @relation("CashOpener")
+
+  @@unique([companyId, email])
+}
+
+model UserRole {
+  userId String
+  roleId String
+  user   User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+}
+
+// ───────────── Clients ─────────────
+
+enum CustomerStatus {
+  NORMAL
+  VIP
+  BLACKLISTED
+}
+
+model Customer {
+  id             String         @id @default(cuid())
+  companyId      String
+  firstName      String
+  lastName       String
+  phone          String
+  email          String?
+  nationality    String?
+  idType         String?        // CIN, PASSPORT, RESIDENCE_PERMIT
+  idNumber       String?
+  idExpiry       DateTime?
+  licenseNumber  String?
+  licenseIssuedAt DateTime?
+  licenseExpiry  DateTime?
+  birthDate      DateTime?
+  address        String?
+  status         CustomerStatus @default(NORMAL)
+  notes          String?
+  createdAt      DateTime       @default(now())
+
+  company      Company       @relation(fields: [companyId], references: [id])
+  reservations Reservation[]
+  invoices     Invoice[]
+
+  @@index([companyId, phone])
+  @@index([companyId, idNumber])
+}
+
+// ───────────── Flotte ─────────────
+
+model VehicleCategory {
+  id            String  @id @default(cuid())
+  companyId     String
+  code          String  // ECO, SUV, PRE...
+  name          String
+  defaultDailyRate Decimal @db.Decimal(10, 2)
+  defaultDeposit   Decimal? @db.Decimal(10, 2)
+  includedKmPerDay Int?
+  isActive      Boolean @default(true)
+
+  company  Company   @relation(fields: [companyId], references: [id])
+  vehicles Vehicle[]
+  rates    CategoryRate[]
+
+  @@unique([companyId, code])
+}
+
+enum VehicleStatus {
+  AVAILABLE
+  RENTED
+  MAINTENANCE
+  BLOCKED
+}
+
+enum Transmission {
+  MANUAL
+  AUTOMATIC
+}
+
+enum FuelType {
+  DIESEL
+  PETROL
+  HYBRID
+  ELECTRIC
+}
+
+model Vehicle {
+  id            String        @id @default(cuid())
+  companyId     String
+  branchId      String
+  categoryId    String
+  plate         String
+  vin           String?
+  brand         String
+  model         String
+  year          Int?
+  color         String?
+  transmission  Transmission  @default(MANUAL)
+  fuel          FuelType      @default(DIESEL)
+  seats         Int           @default(5)
+  mileage       Int           @default(0)
+  status        VehicleStatus @default(AVAILABLE)
+  insuranceExpiry DateTime?
+  inspectionExpiry DateTime?  // visite technique
+  photoUrl      String?
+  createdAt     DateTime      @default(now())
+
+  company      Company         @relation(fields: [companyId], references: [id])
+  branch       Branch          @relation(fields: [branchId], references: [id])
+  category     VehicleCategory @relation(fields: [categoryId], references: [id])
+  reservations Reservation[]
+  expenses     Expense[]
+
+  @@unique([companyId, plate])
+  @@index([companyId, status])
+}
+
+// ───────────── Tarifs ─────────────
+
+model Season {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String   // basse, haute, pointe
+  startDate DateTime
+  endDate   DateTime
+  color     String?
+
+  company Company        @relation(fields: [companyId], references: [id])
+  rates   CategoryRate[]
+
+  @@index([companyId, startDate, endDate])
+}
+
+// Tarif d'une catégorie ; seasonId null = tarif de base toute l'année
+model CategoryRate {
+  id          String   @id @default(cuid())
+  categoryId  String
+  seasonId    String?
+  dailyRate   Decimal  @db.Decimal(10, 2)
+  weeklyRate  Decimal? @db.Decimal(10, 2)
+  monthlyRate Decimal? @db.Decimal(10, 2)
+  weekendRate Decimal? @db.Decimal(10, 2)
+
+  category VehicleCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  season   Season?         @relation(fields: [seasonId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, seasonId])
+}
+
+enum PriceType {
+  PER_DAY
+  FLAT
+}
+
+model RentalOption {
+  id        String    @id @default(cuid())
+  companyId String
+  key       String    // baby_seat, gps...
+  name      String
+  price     Decimal   @db.Decimal(10, 2)
+  priceType PriceType @default(PER_DAY)
+  maxQty    Int       @default(1)
+  taxable   Boolean   @default(true)
+  isActive  Boolean   @default(true)
+
+  company Company @relation(fields: [companyId], references: [id])
+  items   ReservationOption[]
+
+  @@unique([companyId, key])
+}
+
+model Protection {
+  id          String  @id @default(cuid())
+  companyId   String
+  key         String  // basic, medium, full
+  name        String
+  pricePerDay Decimal @db.Decimal(10, 2)
+  deductible  Decimal @db.Decimal(10, 2) // franchise
+  deposit     Decimal? @db.Decimal(10, 2)
+  isDefault   Boolean @default(false)
+
+  company      Company       @relation(fields: [companyId], references: [id])
+  reservations Reservation[]
+
+  @@unique([companyId, key])
+}
+
+// ───────────── Réservations & contrats ─────────────
+
+enum ReservationStatus {
+  QUOTE
+  PENDING
+  CONFIRMED
+  IN_PROGRESS   // véhicule parti
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+model Reservation {
+  id            String            @id @default(cuid())
+  companyId     String
+  number        String            // ex: RES-2026-00001
+  customerId    String
+  vehicleId     String?
+  categoryId    String?
+  protectionId  String?
+  createdById   String
+  status        ReservationStatus @default(PENDING)
+  pickupAt      DateTime
+  returnAt      DateTime
+  pickupBranchId String?
+  returnBranchId String?
+  dailyRate     Decimal           @db.Decimal(10, 2)
+  days          Int
+  subtotal      Decimal           @db.Decimal(10, 2)
+  taxAmount     Decimal           @default(0) @db.Decimal(10, 2)
+  total         Decimal           @db.Decimal(10, 2)
+  depositAmount Decimal?          @db.Decimal(10, 2)
+  source        String?           // téléphone, WhatsApp, site...
+  notes         String?
+  createdAt     DateTime          @default(now())
+
+  company    Company     @relation(fields: [companyId], references: [id])
+  customer   Customer    @relation(fields: [customerId], references: [id])
+  vehicle    Vehicle?    @relation(fields: [vehicleId], references: [id])
+  protection Protection? @relation(fields: [protectionId], references: [id])
+  createdBy  User        @relation("ReservationCreator", fields: [createdById], references: [id])
+  options    ReservationOption[]
+  contract   Contract?
+  payments   Payment[]
+  deposit    Deposit?
+  invoices   Invoice[]
+
+  @@unique([companyId, number])
+  @@index([vehicleId, pickupAt, returnAt]) // détection des conflits de planning
+  @@index([companyId, status])
+}
+
+model ReservationOption {
+  id            String  @id @default(cuid())
+  reservationId String
+  optionId      String
+  quantity      Int     @default(1)
+  unitPrice     Decimal @db.Decimal(10, 2)
+
+  reservation Reservation  @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  option      RentalOption @relation(fields: [optionId], references: [id])
+}
+
+model Contract {
+  id            String   @id @default(cuid())
+  companyId     String
+  reservationId String   @unique
+  number        String
+  language      String   @default("fr") // fr, ar, en, bilingue
+  pdfUrl        String?
+  customerSignedAt DateTime?
+  staffSignedAt    DateTime?
+  createdAt     DateTime @default(now())
+
+  company     Company     @relation(fields: [companyId], references: [id])
+  reservation Reservation @relation(fields: [reservationId], references: [id])
+
+  @@unique([companyId, number])
+}
+
+// ───────────── Numérotation & audit ─────────────
+
+model DocumentSequence {
+  id        String @id @default(cuid())
+  companyId String
+  type      String // reservation, quote, contract, invoice
+  pattern   String // RES-{YYYY}-{SEQ:5}
+  current   Int    @default(0)
+  resetYearly Boolean @default(true)
+  lastYear  Int?
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@unique([companyId, type])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  companyId String
+  userId    String?
+  action    String   // login, create, update, delete
+  entity    String
+  entityId  String?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  company Company @relation(fields: [companyId], references: [id])
+
+  @@index([companyId, createdAt])
+}
+
+// ───────────── Phase 2 : finance ─────────────
+
+enum PaymentType {
+  PAYMENT
+  REFUND
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  TRANSFER
+  CHEQUE
+}
+
+enum CashSessionStatus {
+  OPEN
+  CLOSED
+}
+
+enum DepositStatus {
+  HELD
+  RETURNED
+  RETAINED
+  PARTIAL
+}
+
+enum InvoiceStatus {
+  ISSUED
+  CANCELLED
+}
+
+model CashSession {
+  id           String            @id @default(cuid())
+  companyId    String
+  openedById   String
+  openedAt     DateTime          @default(now())
+  closedAt     DateTime?
+  openingFloat Decimal           @db.Decimal(10, 2)
+  expectedCash Decimal?          @db.Decimal(10, 2)
+  countedCash  Decimal?          @db.Decimal(10, 2)
+  difference   Decimal?          @db.Decimal(10, 2)
+  status       CashSessionStatus @default(OPEN)
+  notes        String?
+
+  company          Company   @relation(fields: [companyId], references: [id])
+  openedBy         User      @relation("CashOpener", fields: [openedById], references: [id])
+  payments         Payment[]
+  expenses         Expense[]
+  receivedDeposits Deposit[] @relation("DepositReceived")
+  returnedDeposits Deposit[] @relation("DepositReturned")
+
+  @@index([companyId, status])
+}
+
+model Payment {
+  id            String        @id @default(cuid())
+  companyId     String
+  reservationId String
+  cashSessionId String?
+  receivedById  String
+  type          PaymentType   @default(PAYMENT)
+  method        PaymentMethod
+  amount        Decimal       @db.Decimal(10, 2)
+  reference     String?
+  receiptNumber String
+  notes         String?
+  paidAt        DateTime      @default(now())
+
+  company     Company      @relation(fields: [companyId], references: [id])
+  reservation Reservation  @relation(fields: [reservationId], references: [id])
+  cashSession CashSession? @relation(fields: [cashSessionId], references: [id])
+  receivedBy  User         @relation(fields: [receivedById], references: [id])
+
+  @@unique([companyId, receiptNumber])
+  @@index([companyId, paidAt])
+}
+
+// Une caution n'est jamais comptée comme chiffre d'affaires.
+model Deposit {
+  id               String        @id @default(cuid())
+  companyId        String
+  reservationId    String        @unique
+  amount           Decimal       @db.Decimal(10, 2)
+  method           PaymentMethod
+  status           DepositStatus @default(HELD)
+  returnedAmount   Decimal       @default(0) @db.Decimal(10, 2)
+  retainedAmount   Decimal       @default(0) @db.Decimal(10, 2)
+  reason           String?
+  receivedAt       DateTime      @default(now())
+  closedAt         DateTime?
+  receivedSessionId String?
+  returnSessionId  String?
+
+  company         Company      @relation(fields: [companyId], references: [id])
+  reservation     Reservation  @relation(fields: [reservationId], references: [id])
+  receivedSession CashSession? @relation("DepositReceived", fields: [receivedSessionId], references: [id])
+  returnSession   CashSession? @relation("DepositReturned", fields: [returnSessionId], references: [id])
+
+  @@index([companyId, status])
+}
+
+model Invoice {
+  id            String        @id @default(cuid())
+  companyId     String
+  reservationId String?
+  customerId    String
+  number        String
+  status        InvoiceStatus @default(ISSUED)
+  issueDate     DateTime      @default(now())
+  subtotal      Decimal       @db.Decimal(10, 2)
+  taxAmount     Decimal       @db.Decimal(10, 2)
+  total         Decimal       @db.Decimal(10, 2)
+  notes         String?
+
+  company     Company      @relation(fields: [companyId], references: [id])
+  reservation Reservation? @relation(fields: [reservationId], references: [id])
+  customer    Customer     @relation(fields: [customerId], references: [id])
+  lines       InvoiceLine[]
+
+  @@unique([companyId, number])
+  @@index([companyId, issueDate])
+}
+
+model InvoiceLine {
+  id          String  @id @default(cuid())
+  invoiceId   String
+  description String
+  quantity    Decimal @db.Decimal(10, 2)
+  unitPrice   Decimal @db.Decimal(10, 2)
+  total       Decimal @db.Decimal(10, 2)
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+}
+
+model Supplier {
+  id        String   @id @default(cuid())
+  companyId String
+  name      String
+  type      String?  // garage, assureur, leasing...
+  phone     String?
+  city      String?
+  ice       String?
+  createdAt DateTime @default(now())
+
+  company  Company   @relation(fields: [companyId], references: [id])
+  expenses Expense[]
+
+  @@index([companyId])
+}
+
+model Expense {
+  id            String         @id @default(cuid())
+  companyId     String
+  category      String         // entretien, assurance, carburant...
+  label         String
+  amount        Decimal        @db.Decimal(10, 2)
+  date          DateTime       @default(now())
+  paid          Boolean        @default(true)
+  method        PaymentMethod?
+  reference     String?
+  vehicleId     String?
+  supplierId    String?
+  cashSessionId String?
+
+  company     Company      @relation(fields: [companyId], references: [id])
+  vehicle     Vehicle?     @relation(fields: [vehicleId], references: [id])
+  supplier    Supplier?    @relation(fields: [supplierId], references: [id])
+  cashSession CashSession? @relation(fields: [cashSessionId], references: [id])
+
+  @@index([companyId, date])
+}
